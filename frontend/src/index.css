@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: rgba(28, 28, 30, 0.72);
+  --bg-tertiary: rgba(44, 44, 46, 0.65);
+  --bg-elevated: rgba(44, 44, 46, 0.80);
+  --bg-card: rgba(36, 36, 38, 0.70);
+  --bg-card-hover: rgba(50, 50, 52, 0.75);
+  --bg-input: rgba(118, 118, 128, 0.24);
+
+  --separator: rgba(84, 84, 88, 0.36);
+  --separator-opaque: rgba(56, 56, 58, 1);
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(235, 235, 245, 0.60);
+  --text-tertiary: rgba(235, 235, 245, 0.30);
+  --text-quaternary: rgba(235, 235, 245, 0.18);
+
+  --accent: #0A84FF;
+  --accent-hover: #409CFF;
+  --green: #30D158;
+  --yellow: #FFD60A;
+  --orange: #FF9F0A;
+  --red: #FF453A;
+  --pink: #FF375F;
+  --purple: #BF5AF2;
+  --indigo: #5E5CE6;
+  --teal: #64D2FF;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  --blur: 40px;
+  --blur-heavy: 80px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "kern", "liga", "calt";
+  line-height: 1.47059;
+  letter-spacing: -0.022em;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+::selection {
+  background: rgba(10, 132, 255, 0.3);
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+}
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 6px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}

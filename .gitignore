@@ -1,0 +1,33 @@
+# Python
+backend/venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# 个人 API Key（敏感信息，不上传）
+backend/.env
+backend/.env.personal_backup
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Rust / Tauri 编译产物
+frontend/src-tauri/target/
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Release 打包产物（体积太大）
+release/FileAI.app/
+release/*.dmg
+release/old_*/
+release/dist_public/*.dmg
+
+# PyInstaller
+*.spec.bak

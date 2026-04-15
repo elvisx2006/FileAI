@@ -1,0 +1,85 @@
+watch_directories:
+  - ~/Downloads
+  - ~/Desktop
+  - ~/Documents
+
+organize_base: ~/Organized
+
+ai:
+  provider: deepseek
+  model: deepseek-chat
+  fallback_model: deepseek-chat
+  base_url: https://api.deepseek.com
+  batch_size: 20
+  low_confidence_threshold: 0.7
+
+safety:
+  dry_run: true
+  confirm_before_move: true
+  exclude_patterns:
+    - "*.app"
+    - "*.DS_Store"
+    - ".localized"
+    - "node_modules/**"
+    - ".git/**"
+    - "__pycache__/**"
+    - ".Trash/**"
+  exclude_dirs:
+    - .Trash
+    - .git
+    - node_modules
+    - __pycache__
+    - .venv
+    - venv
+
+category_tree:
+  Documents:
+    Work:
+      - Reports
+      - Presentations
+      - Spreadsheets
+      - Contracts
+    Personal:
+      - Finance
+      - Medical
+      - Legal
+      - Resumes
+    Study:
+      - Notes
+      - Papers
+      - Ebooks
+  Images:
+    Screenshots: []
+    Photos: []
+    Design:
+      - UI_Mockups
+      - Icons
+      - Illustrations
+    Wallpapers: []
+  Videos:
+    Recordings: []
+    Tutorials: []
+    Entertainment: []
+  Code:
+    Projects: []
+    Scripts: []
+    Configs: []
+    Data:
+      - CSV
+      - JSON
+      - SQL
+  Audio:
+    Music: []
+    Podcasts: []
+    Recordings: []
+  Archives:
+    Compressed: []
+    Disk_Images: []
+    Backups: []
+  Design:
+    Figma: []
+    Sketch: []
+    PSD: []
+  Installers: []
+  Misc:
+    Needs_Review: []
