@@ -196,7 +196,8 @@ A：确认已登录 iCloud、网络正常；占位符文件需下载到本地后
 
 ## 最近更新（摘要）
 
-- **v1.4.3**：设置页可编辑监控目录与整理目标、iCloud Drive 快捷路径与占位符整理（macOS `brctl`）、启动时释放 8000 端口、异步与 watcher 线程安全修复等。完整变更见 [Releases](https://github.com/elvisx2006/FileAI/releases)。
+- **v1.4.4**：与 **v1.4.3** 功能一致；同步更新 README（API 配置、iCloud、FAQ 等），安装包版本号对齐。完整变更见 [Releases](https://github.com/elvisx2006/FileAI/releases)。
+- **v1.4.3**：设置页可编辑监控目录与整理目标、iCloud Drive 快捷路径与占位符整理（macOS `brctl`）、启动时释放 8000 端口、异步与 watcher 线程安全修复等。
 
 ---
 
