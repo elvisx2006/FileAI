@@ -2,8 +2,9 @@
 # FileAI — 双击此文件启动应用
 cd "$(dirname "$0")"
 
-# 如果 8000 端口已占用，先关闭
+# 如果 8000 端口已占用，先关闭（避免第二个 uvicorn 因 Errno 48 退出）
 lsof -ti :8000 | xargs kill -9 2>/dev/null
+sleep 0.3
 
 # 激活虚拟环境并启动后端
 source backend/venv/bin/activate

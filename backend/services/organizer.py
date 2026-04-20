@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 from backend.config import get_config
 from backend.models import ClassifyResult, OperationRecord, OrganizePlan
+from backend.services import icloud
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +40,33 @@ def execute_plan(
 
     for idx, item in enumerate(plan.items):
         src = Path(item.original_path)
+        move_name = src.stem if src.name.endswith(".icloud") else src.name
 
         if not src.exists():
             skipped += 1
             if on_progress:
-                on_progress(idx + 1, total, src.name)
+                on_progress(idx + 1, total, move_name)
+            continue
+        src_local = icloud.ensure_local_file(src) if not plan.dry_run else src.resolve()
+        if not plan.dry_run and src_local is None:
+            logger.error("Could not materialize iCloud file: %s", src)
+            errors.append({
+                "file": move_name,
+                "source": str(src),
+                "dest": "",
+                "error": "iCloud 文件无法下载到本地（请检查网络与 iCloud 同步）",
+            })
+            if on_progress:
+                on_progress(idx + 1, total, move_name)
             continue
 
+        if plan.dry_run:
+            src_for_record = src.resolve()
+        else:
+            src_for_record = src_local
+
         dst_dir = base / item.target_folder
-        dst = dst_dir / src.name
+        dst = dst_dir / move_name
 
         if dst.exists():
             stem = dst.stem
@@ -57,31 +76,31 @@ def execute_plan(
         if not plan.dry_run:
             try:
                 dst_dir.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst))
+                shutil.move(str(src_for_record), str(dst))
             except Exception as e:
-                logger.error(f"Failed to move {src} -> {dst}: {e}")
+                logger.error(f"Failed to move {src_for_record} -> {dst}: {e}")
                 errors.append({
-                    "file": src.name,
-                    "source": str(src),
+                    "file": move_name,
+                    "source": str(src_for_record),
                     "dest": str(dst),
                     "error": str(e),
                 })
                 if on_progress:
-                    on_progress(idx + 1, total, src.name)
+                    on_progress(idx + 1, total, move_name)
                 continue
 
         record = OperationRecord(
             id=str(uuid.uuid4())[:8],
             timestamp=datetime.now().isoformat(),
-            source_path=str(src),
+            source_path=str(src_for_record),
             dest_path=str(dst),
-            file_name=src.name,
+            file_name=move_name,
             operation="move",
         )
         records.append(record)
 
         if on_progress:
-            on_progress(idx + 1, total, src.name)
+            on_progress(idx + 1, total, move_name)
 
     return {
         "records": records,

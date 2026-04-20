@@ -14,6 +14,8 @@ class FileInfo(BaseModel):
     modified_date: str
     parent_dir: str
     id: str = ""
+    # "local" | "icloud_placeholder" — placeholder is a *.icloud stub before download
+    storage_state: str = "local"
 
     def model_post_init(self, __context):
         if not self.id:

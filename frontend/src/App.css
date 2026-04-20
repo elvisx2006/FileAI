@@ -835,6 +835,44 @@
   line-height: 1.5;
   padding: 8px 16px 14px;
 }
+.setting-list-editable .setting-path-row {
+  border-bottom: 0.5px solid var(--separator);
+}
+.setting-path-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--separator);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.setting-path-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.setting-path-input-block {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 0 16px 12px;
+  box-sizing: border-box;
+}
+.setting-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 16px 16px;
+}
+.file-icloud-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  color: var(--accent);
+  vertical-align: middle;
+}
 .provider-badge {
   display: inline-block;
   font-size: 10px;

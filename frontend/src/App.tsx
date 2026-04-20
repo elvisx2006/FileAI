@@ -30,6 +30,7 @@ import {
   AlertTriangle,
   Copy,
   X,
+  Cloud,
 } from "lucide-react";
 import {
   scanAll,
@@ -45,6 +46,9 @@ import {
   openFolder,
   getOrganizedTree,
   getOrganizeStatus,
+  fetchAppConfig,
+  updateAppConfig,
+  discoverIcloud,
   formatSize,
   formatTime,
   type ScanDirectory,
@@ -176,6 +180,13 @@ export default function App() {
   const [organizedFolders, setOrganizedFolders] = useState<OrganizedFolder[]>([]);
   const [organizedBase, setOrganizedBase] = useState("");
 
+  // Settings — editable paths
+  const [cfgWatchDirs, setCfgWatchDirs] = useState<string[]>([]);
+  const [cfgOrganizeBase, setCfgOrganizeBase] = useState("");
+  const [cfgLoading, setCfgLoading] = useState(false);
+  const [cfgSaving, setCfgSaving] = useState(false);
+  const [icloudHint, setIcloudHint] = useState<string | null>(null);
+
   // Live feed collapse
   const [liveOpen, setLiveOpen] = useState(false);
 
@@ -260,8 +271,58 @@ export default function App() {
         setOrganizedFolders(d.folders);
         setOrganizedBase(d.base);
       }).catch(() => {});
+    } else if (page === "settings") {
+      setCfgLoading(true);
+      fetchAppConfig()
+        .then((c) => {
+          setCfgWatchDirs([...c.watch_directories]);
+          setCfgOrganizeBase(c.organize_base);
+        })
+        .catch(() => showToast("无法加载配置"))
+        .finally(() => setCfgLoading(false));
+      discoverIcloud()
+        .then((d) => {
+          setIcloudHint(
+            d.icloud_drive.exists
+              ? `已检测到本机 iCloud Drive，可点下方「添加 iCloud Drive」快捷加入。`
+              : `未检测到默认 iCloud Drive 路径，仍可手动粘贴路径。${d.note ? ` ${d.note}` : ""}`,
+          );
+        })
+        .catch(() => setIcloudHint(null));
     }
-  }, [page, historyPage]);
+  }, [page, historyPage, showToast]);
+
+  const ICLOUD_WATCH_PRESET = "~/Library/Mobile Documents/com~apple~CloudDocs";
+
+  const addIcloudWatchPreset = () => {
+    setCfgWatchDirs((prev) => {
+      const norm = (s: string) => s.replace(/\s+/g, "");
+      if (prev.some((p) => norm(p) === norm(ICLOUD_WATCH_PRESET))) return prev;
+      return [...prev, ICLOUD_WATCH_PRESET];
+    });
+  };
+
+  const savePathSettings = async () => {
+    const dirs = cfgWatchDirs.map((d) => d.trim()).filter(Boolean);
+    if (dirs.length === 0) {
+      showToast("至少保留一个监控目录");
+      return;
+    }
+    const base = cfgOrganizeBase.trim();
+    if (!base) {
+      showToast("整理目标路径不能为空");
+      return;
+    }
+    setCfgSaving(true);
+    try {
+      await updateAppConfig({ watch_directories: dirs, organize_base: base });
+      showToast("已保存；下次扫描将使用新目录");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "保存失败";
+      showToast(msg);
+    }
+    setCfgSaving(false);
+  };
 
   const handleScan = async () => {
     setLoading(true);
@@ -300,9 +361,19 @@ export default function App() {
   };
 
   const handleConfirm = async () => {
-    if (!planId) return;
+    if (!planId || !classifyResult) return;
+    const pathSet = new Set(classifyResult.map((i) => i.original_path));
+    const cloudOnly = scanData
+      .flatMap((d) => d.files)
+      .filter((f) => pathSet.has(f.path) && f.storage_state === "icloud_placeholder");
+    if (cloudOnly.length > 0) {
+      const ok = window.confirm(
+        `有 ${cloudOnly.length} 个文件当前为 iCloud 仅云端占位符。确认执行时将尝试下载到本地后再移动，耗时与流量取决于文件大小。\n\n是否继续？`,
+      );
+      if (!ok) return;
+    }
     const currentPlanId = planId;
-    const total = classifyResult?.length || 0;
+    const total = classifyResult.length;
     setOrganizing(true);
     setProgress({ current: 0, total, stage: "organize" });
 
@@ -688,7 +759,14 @@ export default function App() {
                         <label className="file-row" key={f.path}>
                           <input type="checkbox" checked={selectedFiles.has(f.path)} onChange={() => toggleFile(f.path)} />
                           <span className="file-ext">{f.extension || "—"}</span>
-                          <span className="file-name">{f.name}</span>
+                          <span className="file-name">
+                            {f.storage_state === "icloud_placeholder" && (
+                              <span className="file-icloud-badge" title="仅 iCloud 云端；执行整理时会尝试下载到本地">
+                                <Cloud size={12} />
+                              </span>
+                            )}
+                            {f.name}
+                          </span>
                           <span className="file-size">{formatSize(f.size)}</span>
                         </label>
                       ))}
@@ -736,7 +814,7 @@ export default function App() {
               <div className="empty-state">
                 <Scan size={48} strokeWidth={1} />
                 <p>点击「扫描目录」开始整理文件</p>
-                <p className="empty-sub">将会扫描 Downloads、Desktop、Documents 中的文件</p>
+                <p className="empty-sub">默认扫描下载/桌面/文档；可在「设置」中添加 iCloud Drive 等目录</p>
               </div>
             )}
           </div>
@@ -843,15 +921,68 @@ export default function App() {
             <div className="settings-panel">
               <div className="setting-group">
                 <h3>监控目录</h3>
-                <div className="setting-list">
-                  <div className="setting-item">~/Downloads</div>
-                  <div className="setting-item">~/Desktop</div>
-                  <div className="setting-item">~/Documents</div>
-                </div>
+                {icloudHint && <p className="setting-desc">{icloudHint}</p>}
+                {cfgLoading ? (
+                  <p className="setting-desc">加载中…</p>
+                ) : (
+                  <>
+                    <div className="setting-list setting-list-editable">
+                      {cfgWatchDirs.map((dir, i) => (
+                        <div className="setting-item setting-path-row" key={i}>
+                          <input
+                            type="text"
+                            className="setting-path-input"
+                            value={dir}
+                            onChange={(e) => {
+                              const next = [...cfgWatchDirs];
+                              next[i] = e.target.value;
+                              setCfgWatchDirs(next);
+                            }}
+                            placeholder="例如 ~/Downloads 或 iCloud 路径"
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setCfgWatchDirs(cfgWatchDirs.filter((_, j) => j !== i))}
+                            disabled={cfgWatchDirs.length <= 1}
+                          >
+                            移除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="setting-actions-row">
+                      <button type="button" className="btn btn-secondary" onClick={() => setCfgWatchDirs((p) => [...p, ""])}>
+                        添加目录
+                      </button>
+                      <button type="button" className="btn btn-secondary" onClick={addIcloudWatchPreset}>
+                        <Cloud size={14} /> 添加 iCloud Drive
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
               <div className="setting-group">
                 <h3>整理目标</h3>
-                <div className="setting-item">~/Organized</div>
+                <input
+                  type="text"
+                  className="setting-path-input setting-path-input-block"
+                  value={cfgOrganizeBase}
+                  onChange={(e) => setCfgOrganizeBase(e.target.value)}
+                  placeholder="~/Organized"
+                  disabled={cfgLoading}
+                />
+                <p className="setting-desc">整理后的文件将移动到此目录下的分类子文件夹中。可与监控目录同为 iCloud 路径以减少跨盘同步。</p>
+              </div>
+              <div className="setting-group">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void savePathSettings()}
+                  disabled={cfgLoading || cfgSaving}
+                >
+                  {cfgSaving ? "保存中…" : "保存路径配置"}
+                </button>
               </div>
               <div className="setting-group">
                 <h3>AI 模型</h3>

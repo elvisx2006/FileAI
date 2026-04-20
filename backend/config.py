@@ -41,13 +41,12 @@ class AppConfig(BaseModel):
 _config: Optional[AppConfig] = None
 
 
-def load_config(path: str = None) -> AppConfig:
+def load_config(path: str | None = None, *, force: bool = False) -> AppConfig:
     global _config
-    if _config is not None and path is None:
-        return _config
-
     if path is None:
         path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    if _config is not None and not force:
+        return _config
 
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -56,6 +55,31 @@ def load_config(path: str = None) -> AppConfig:
     else:
         _config = AppConfig()
 
+    return _config
+
+
+def save_app_config(
+    *,
+    watch_directories: list[str] | None = None,
+    organize_base: str | None = None,
+) -> AppConfig:
+    """Merge updates into current config, write backend/config.yaml, refresh cache."""
+    global _config
+    path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    data = get_config().model_dump()
+    if watch_directories is not None:
+        data["watch_directories"] = watch_directories
+    if organize_base is not None:
+        data["organize_base"] = organize_base
+    _config = AppConfig(**data)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            _config.model_dump(),
+            f,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
     return _config
 
 

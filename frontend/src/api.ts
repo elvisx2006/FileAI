@@ -10,6 +10,16 @@ export interface FileInfo {
   modified_date: string;
   parent_dir: string;
   id: string;
+  /** "local" | "icloud_placeholder" */
+  storage_state?: string;
+}
+
+export interface AppConfigResponse {
+  watch_directories: string[];
+  organize_base: string;
+  ai: Record<string, unknown>;
+  safety: Record<string, unknown>;
+  category_tree: Record<string, unknown>;
 }
 
 export interface ScanDirectory {
@@ -181,6 +191,30 @@ export interface OrganizedFolder {
 
 export async function getOrganizedTree() {
   return request<{ base: string; folders: OrganizedFolder[] }>("/organized-tree");
+}
+
+export async function fetchAppConfig() {
+  return request<AppConfigResponse>("/config");
+}
+
+export async function updateAppConfig(body: {
+  watch_directories?: string[];
+  organize_base?: string;
+}) {
+  return request<{ ok: boolean; config: AppConfigResponse }>("/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function discoverIcloud() {
+  return request<{
+    platform: string;
+    icloud_drive: { path: string; exists: boolean; recommended_watch_path: string };
+    materialize_supported: boolean;
+    note: string | null;
+  }>("/icloud/discover");
 }
 
 export async function getOrganizeStatus(planId: string) {

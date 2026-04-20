@@ -15,12 +15,13 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.config import load_config, get_config
+from backend.config import load_config, get_config, save_app_config
 from backend.models import ClassifyResult, FileInfo, OrganizePlan
-from backend.services import scanner, classifier, rule_engine, organizer, history
+from backend.services import scanner, classifier, rule_engine, organizer, history, icloud
 from backend.services.watcher import watcher
 
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +33,9 @@ ws_clients: list[WebSocket] = []
 plan_store: dict[str, OrganizePlan] = {}
 # Track ongoing organize tasks: plan_id -> {current, total, done, result}
 organize_status: dict[str, dict] = {}
+
+# Main event loop (set in lifespan) — watcher callbacks run on watchdog threads
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 async def broadcast(event: dict):
@@ -48,20 +52,31 @@ async def broadcast(event: dict):
 
 def _on_new_file(path: str):
     """Called by the watcher when a new file appears."""
-    asyncio.get_event_loop().create_task(
-        broadcast({"type": "new_file", "path": path})
-    )
+    if _main_loop is None:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            broadcast({"type": "new_file", "path": path}),
+            _main_loop,
+        )
+    except Exception as e:
+        logger.warning("Could not schedule new_file broadcast: %s", e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _main_loop
     load_config()
     await history.init_db()
+    _main_loop = asyncio.get_running_loop()
     watcher.on_new_file(_on_new_file)
     logger.info("Backend started")
-    yield
-    watcher.stop()
-    logger.info("Backend stopped")
+    try:
+        yield
+    finally:
+        _main_loop = None
+        watcher.stop()
+        logger.info("Backend stopped")
 
 
 app = FastAPI(title="File Organizer API", version="1.0.0", lifespan=lifespan)
@@ -128,7 +143,7 @@ async def classify_files(files: list[dict]):
 
     ai_results = []
     if needs_ai:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def on_ai_progress(current: int, total: int):
             try:
@@ -202,7 +217,7 @@ async def organize_confirm(plan_id: str):
 
     organize_status[plan_id] = {"current": 0, "total": total_items, "done": False, "result": None}
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     async def _run_organize():
         def on_progress(current: int, total: int, file_name: str):
@@ -252,7 +267,7 @@ async def organize_confirm(plan_id: str):
         organize_status[plan_id]["current"] = total_items
         await broadcast(done_payload)
 
-    asyncio.ensure_future(_run_organize())
+    asyncio.create_task(_run_organize())
 
     return {
         "success": True,
@@ -414,6 +429,49 @@ async def get_current_config():
     return config.dict()
 
 
+class ConfigPatchBody(BaseModel):
+    watch_directories: Optional[list[str]] = None
+    organize_base: Optional[str] = None
+
+
+@app.patch("/api/config")
+async def patch_config(body: ConfigPatchBody):
+    updates: dict = {}
+    if body.watch_directories is not None:
+        dirs = [d.strip() for d in body.watch_directories if d and str(d).strip()]
+        if not dirs:
+            raise HTTPException(status_code=400, detail="watch_directories 不能为空")
+        updates["watch_directories"] = dirs
+    if body.organize_base is not None:
+        ob = body.organize_base.strip()
+        if not ob:
+            raise HTTPException(status_code=400, detail="organize_base 不能为空")
+        updates["organize_base"] = ob
+    if not updates:
+        return {"ok": True, "config": get_config().dict()}
+    cfg = save_app_config(**updates)
+    return {"ok": True, "config": cfg.dict()}
+
+
+@app.get("/api/icloud/discover")
+async def icloud_discover():
+    import sys
+
+    root = icloud.icloud_drive_root()
+    return {
+        "platform": sys.platform,
+        "icloud_drive": {
+            "path": str(root),
+            "exists": root.exists(),
+            "recommended_watch_path": "~/Library/Mobile Documents/com~apple~CloudDocs",
+        },
+        "materialize_supported": sys.platform == "darwin",
+        "note": None
+        if sys.platform == "darwin"
+        else "占位符下载（brctl）仅在 macOS 上可用；可将 iCloud 盘符路径加入监控目录作为兜底。",
+    }
+
+
 # ── Open in Finder ──────────────────────────────────────
 
 @app.post("/api/open-folder")
@@ -429,6 +487,8 @@ async def open_folder(body: dict):
         "downloads": str(Path.home() / "Downloads"),
         "desktop": str(Path.home() / "Desktop"),
         "documents": str(Path.home() / "Documents"),
+        "icloud": str(icloud.icloud_drive_root()),
+        "iclouddrive": str(icloud.icloud_drive_root()),
     }
 
     resolved = shortcuts.get(folder.lower(), folder)

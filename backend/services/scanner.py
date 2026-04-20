@@ -48,17 +48,30 @@ def scan_directory(target_dir: str, recursive: bool = True) -> ScanResult:
             fpath = dir_path / fname
             if fname.startswith(".") or _should_exclude(fpath, fname, config):
                 continue
+            if fname.endswith(".icloud"):
+                real_candidate = dir_path / Path(fname).stem
+                if real_candidate.exists() and real_candidate.is_file():
+                    continue
             try:
                 stat = fpath.stat()
                 mod_dt = datetime.fromtimestamp(stat.st_mtime)
+                if fname.endswith(".icloud"):
+                    display_name = fpath.stem
+                    ext = Path(display_name).suffix.lower()
+                    storage_state = "icloud_placeholder"
+                else:
+                    display_name = fname
+                    ext = fpath.suffix.lower()
+                    storage_state = "local"
                 info = FileInfo(
                     path=str(fpath),
-                    name=fname,
-                    extension=fpath.suffix.lower(),
+                    name=display_name,
+                    extension=ext,
                     size=stat.st_size,
                     modified_time=stat.st_mtime,
                     modified_date=mod_dt.strftime("%Y-%m"),
                     parent_dir=str(fpath.parent),
+                    storage_state=storage_state,
                 )
                 results.append(info)
                 total_size += stat.st_size
