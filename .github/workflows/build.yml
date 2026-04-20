@@ -5,6 +5,11 @@ name: Build FileAI
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# 默认 GITHUB_TOKEN 只有读权限，创建 Release 必须显式放开
+# 若仍报 403：仓库 Settings → Actions → General → Workflow permissions → Read and write
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -126,8 +131,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: FileAI-macOS
-          path: |
-            frontend/src-tauri/target/release/bundle/dmg/*.dmg
+          path: frontend/src-tauri/target/release/bundle/dmg/
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload Windows artifacts
@@ -135,9 +140,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: FileAI-Windows
-          path: |
-            frontend/src-tauri/target/release/bundle/msi/*.msi
-            frontend/src-tauri/target/release/bundle/nsis/*.exe
+          path: frontend/src-tauri/target/release/bundle/
+          if-no-files-found: error
           retention-days: 30
 
   release:
@@ -157,13 +161,18 @@ jobs:
           name: FileAI-Windows
           path: artifacts/windows
 
+      - name: List release candidates
+        run: find artifacts -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -print
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # download-artifact 会保留上传时的相对路径，用递归 glob 匹配
           files: |
-            artifacts/macos/*.dmg
-            artifacts/windows/*.msi
-            artifacts/windows/*.exe
+            artifacts/macos/**/*.dmg
+            artifacts/windows/**/*.msi
+            artifacts/windows/**/*.exe
           generate_release_notes: true
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
