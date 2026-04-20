@@ -55,6 +55,7 @@ import {
   type ClassifyItem,
   type OperationRecord,
   type OrganizedFolder,
+  type FileInfo,
 } from "./api";
 import "./App.css";
 
@@ -153,6 +154,39 @@ function confidenceLabel(c: number): string {
   return "低";
 }
 
+function relFromWatch(watchRoot: string, parentDir: string): string {
+  const r = toPosix(watchRoot.replace(/[/\\]$/, ""));
+  const p = toPosix(parentDir.replace(/[/\\]$/, ""));
+  if (p === r) return "（根目录）";
+  const prefix = r.endsWith("/") ? r : `${r}/`;
+  if (p.startsWith(prefix)) {
+    const inner = p.slice(prefix.length);
+    return inner || "（根目录）";
+  }
+  return parentDir.replace(/^\/Users\/[^/]+\//, "~/");
+}
+
+function toPosix(s: string) {
+  return s.replace(/\\/g, "/");
+}
+
+function groupFilesByParent(files: FileInfo[], watchRoot: string) {
+  const map = new Map<string, FileInfo[]>();
+  for (const f of files) {
+    const k = f.parent_dir;
+    if (!map.has(k)) map.set(k, []);
+    map.get(k)!.push(f);
+  }
+  const normRoot = watchRoot.replace(/\/$/, "");
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([parentDir, groupFiles]) => ({
+      parentDir,
+      rel: relFromWatch(normRoot, parentDir),
+      files: groupFiles.sort((x, y) => x.name.localeCompare(y.name)),
+    }));
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [loading, setLoading] = useState(false);
@@ -186,6 +220,10 @@ export default function App() {
   const [cfgLoading, setCfgLoading] = useState(false);
   const [cfgSaving, setCfgSaving] = useState(false);
   const [icloudHint, setIcloudHint] = useState<string | null>(null);
+  const [cfgScanMaxDepth, setCfgScanMaxDepth] = useState(-1);
+  const [cfgSkipProject, setCfgSkipProject] = useState(true);
+  const [cfgCleanupEmpty, setCfgCleanupEmpty] = useState(true);
+  const [collapsedSubfolders, setCollapsedSubfolders] = useState<Set<string>>(() => new Set());
 
   // Live feed collapse
   const [liveOpen, setLiveOpen] = useState(false);
@@ -233,11 +271,14 @@ export default function App() {
             failed: data.failed,
           });
         } else {
-          showToast(`已移动 ${data.moved} 个文件，点击左侧「已整理文件」查看`);
+          const removed = typeof data.empty_dirs_removed === "number" ? data.empty_dirs_removed : 0;
+          const extra = removed > 0 ? `，已清理 ${removed} 个空文件夹` : "";
+          showToast(`已移动 ${data.moved} 个文件${extra}，点击左侧「已整理文件」查看`);
         }
         setClassifyResult(null);
         setPlanId(null);
         setScanData([]);
+        setCollapsedSubfolders(new Set());
         openFolder("organized");
       } else if (data.type === "organize_error") {
         setProgress(null);
@@ -277,6 +318,9 @@ export default function App() {
         .then((c) => {
           setCfgWatchDirs([...c.watch_directories]);
           setCfgOrganizeBase(c.organize_base);
+          setCfgScanMaxDepth(typeof c.scan?.max_depth === "number" ? c.scan.max_depth : -1);
+          setCfgSkipProject(c.scan?.skip_project_dirs !== false);
+          setCfgCleanupEmpty(c.scan?.cleanup_empty_dirs !== false);
         })
         .catch(() => showToast("无法加载配置"))
         .finally(() => setCfgLoading(false));
@@ -315,8 +359,16 @@ export default function App() {
     }
     setCfgSaving(true);
     try {
-      await updateAppConfig({ watch_directories: dirs, organize_base: base });
-      showToast("已保存；下次扫描将使用新目录");
+      await updateAppConfig({
+        watch_directories: dirs,
+        organize_base: base,
+        scan: {
+          max_depth: cfgScanMaxDepth,
+          skip_project_dirs: cfgSkipProject,
+          cleanup_empty_dirs: cfgCleanupEmpty,
+        },
+      });
+      showToast("已保存；下次扫描将使用新配置");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "保存失败";
       showToast(msg);
@@ -331,6 +383,7 @@ export default function App() {
     try {
       const data = await scanAll();
       setScanData(data.directories);
+      setCollapsedSubfolders(new Set());
       const allIds = new Set(data.directories.flatMap((d) => d.files.map((f) => f.path)));
       setSelectedFiles(allIds);
       showToast(`扫描完成: ${data.total_files} 个文件`);
@@ -432,8 +485,11 @@ export default function App() {
             });
             setClassifyResult(null); setPlanId(null); setScanData([]);
           } else {
-            showToast(`已移动 ${res.moved} 个文件，点击左侧「已整理文件」查看`);
+            const removed = typeof res.empty_dirs_removed === "number" ? res.empty_dirs_removed : 0;
+            const extra = removed > 0 ? `，已清理 ${removed} 个空文件夹` : "";
+            showToast(`已移动 ${res.moved} 个文件${extra}，点击左侧「已整理文件」查看`);
             setClassifyResult(null); setPlanId(null); setScanData([]);
+            setCollapsedSubfolders(new Set());
             openFolder("organized");
           }
         }
@@ -470,6 +526,26 @@ export default function App() {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      return next;
+    });
+  };
+
+  const toggleFileGroup = (files: FileInfo[], selectAll: boolean) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      for (const f of files) {
+        if (selectAll) next.add(f.path);
+        else next.delete(f.path);
+      }
+      return next;
+    });
+  };
+
+  const toggleSubfolderCollapsed = (key: string) => {
+    setCollapsedSubfolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -747,32 +823,73 @@ export default function App() {
                     全选 ({selectedFiles.size}/{scanData.flatMap((d) => d.files).length})
                   </label>
                 </div>
-                {scanData.map((dir) => (
-                  <div key={dir.directory} className="dir-group">
-                    <div className="dir-header">
-                      <FolderOpen size={16} />
-                      <span>{dir.directory.replace(/\/Users\/[^/]+\//, "~/")}</span>
-                      <span className="dir-count">{dir.total_count} 个文件 · {formatSize(dir.total_size)}</span>
+                {scanData.map((dir) => {
+                  const subGroups = groupFilesByParent(dir.files, dir.directory);
+                  return (
+                    <div key={dir.directory} className="dir-group">
+                      <div className="dir-header">
+                        <FolderOpen size={16} />
+                        <span>{dir.directory.replace(/\/Users\/[^/]+\//, "~/")}</span>
+                        <span className="dir-count">{dir.total_count} 个文件 · {formatSize(dir.total_size)} · 含子文件夹</span>
+                      </div>
+                      <div className="subfolder-list">
+                        {subGroups.map((g) => {
+                          const subKey = `${dir.directory}\0${g.parentDir}`;
+                          const collapsed = collapsedSubfolders.has(subKey);
+                          const allSel = g.files.length > 0 && g.files.every((f) => selectedFiles.has(f.path));
+                          const sumSz = g.files.reduce((s, f) => s + f.size, 0);
+                          return (
+                            <div className="subfolder-block" key={subKey}>
+                              <div className="subfolder-header">
+                                <button
+                                  type="button"
+                                  className="subfolder-chevron"
+                                  aria-label={collapsed ? "展开" : "折叠"}
+                                  onClick={() => toggleSubfolderCollapsed(subKey)}
+                                >
+                                  <ChevronDown size={16} className={collapsed ? "subfolder-chevron-icon rotated" : "subfolder-chevron-icon"} />
+                                </button>
+                                <label className="subfolder-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={allSel}
+                                    onChange={() => toggleFileGroup(g.files, !allSel)}
+                                  />
+                                </label>
+                                <FolderOpen size={14} className="subfolder-folder-icon" />
+                                <span className="subfolder-name" title={g.parentDir}>
+                                  {g.rel}
+                                </span>
+                                <span className="subfolder-meta">
+                                  {g.files.length} 个 · {formatSize(sumSz)}
+                                </span>
+                              </div>
+                              {!collapsed && (
+                                <div className="file-list file-list-nested">
+                                  {g.files.map((f) => (
+                                    <label className="file-row" key={f.path}>
+                                      <input type="checkbox" checked={selectedFiles.has(f.path)} onChange={() => toggleFile(f.path)} />
+                                      <span className="file-ext">{f.extension || "—"}</span>
+                                      <span className="file-name">
+                                        {f.storage_state === "icloud_placeholder" && (
+                                          <span className="file-icloud-badge" title="仅 iCloud 云端；执行整理时会尝试下载到本地">
+                                            <Cloud size={12} />
+                                          </span>
+                                        )}
+                                        {f.name}
+                                      </span>
+                                      <span className="file-size">{formatSize(f.size)}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="file-list">
-                      {dir.files.map((f) => (
-                        <label className="file-row" key={f.path}>
-                          <input type="checkbox" checked={selectedFiles.has(f.path)} onChange={() => toggleFile(f.path)} />
-                          <span className="file-ext">{f.extension || "—"}</span>
-                          <span className="file-name">
-                            {f.storage_state === "icloud_placeholder" && (
-                              <span className="file-icloud-badge" title="仅 iCloud 云端；执行整理时会尝试下载到本地">
-                                <Cloud size={12} />
-                              </span>
-                            )}
-                            {f.name}
-                          </span>
-                          <span className="file-size">{formatSize(f.size)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -975,13 +1092,49 @@ export default function App() {
                 <p className="setting-desc">整理后的文件将移动到此目录下的分类子文件夹中。可与监控目录同为 iCloud 路径以减少跨盘同步。</p>
               </div>
               <div className="setting-group">
+                <h3>扫描行为</h3>
+                <p className="setting-desc">默认会递归扫描监控目录内所有子文件夹；检测到项目根（如含 package.json）时整目录跳过；整理目标路径内不会再次扫描。</p>
+                <div className="setting-item setting-scan-row">
+                  <label className="setting-scan-label">扫描深度</label>
+                  <select
+                    className="setting-select"
+                    value={String(cfgScanMaxDepth)}
+                    onChange={(e) => setCfgScanMaxDepth(Number(e.target.value))}
+                    disabled={cfgLoading}
+                  >
+                    <option value="-1">完全递归（推荐）</option>
+                    <option value="0">仅监控目录顶层</option>
+                    <option value="1">向下 1 层子文件夹</option>
+                    <option value="2">向下 2 层子文件夹</option>
+                  </select>
+                </div>
+                <label className="setting-item setting-scan-toggle">
+                  <input
+                    type="checkbox"
+                    checked={cfgSkipProject}
+                    onChange={(e) => setCfgSkipProject(e.target.checked)}
+                    disabled={cfgLoading}
+                  />
+                  <span>跳过项目目录（含 package.json / .git / pyproject.toml 等标记时整树不扫）</span>
+                </label>
+                <label className="setting-item setting-scan-toggle">
+                  <input
+                    type="checkbox"
+                    checked={cfgCleanupEmpty}
+                    onChange={(e) => setCfgCleanupEmpty(e.target.checked)}
+                    disabled={cfgLoading}
+                  />
+                  <span>整理完成后删除因此变空的文件夹（不删除监控根与整理根）</span>
+                </label>
+              </div>
+              <div className="setting-group">
                 <button
                   type="button"
                   className="btn btn-primary"
                   onClick={() => void savePathSettings()}
                   disabled={cfgLoading || cfgSaving}
                 >
-                  {cfgSaving ? "保存中…" : "保存路径配置"}
+                  {cfgSaving ? "保存中…" : "保存路径与扫描配置"}
                 </button>
               </div>
               <div className="setting-group">

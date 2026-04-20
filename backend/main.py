@@ -119,7 +119,7 @@ async def scan_one(dir_name: str):
             break
     if target is None:
         return {"error": f"Directory '{dir_name}' is not in watch list"}
-    result = scanner.scan_directory(str(target), recursive=False)
+    result = scanner.scan_directory(str(target))
     return result.dict()
 
 
@@ -261,6 +261,7 @@ async def organize_confirm(plan_id: str):
             "skipped": skipped,
             "failed": len(errors),
             "errors": [{"file": e["file"], "error": e["error"]} for e in errors],
+            "empty_dirs_removed": result.get("empty_dirs_removed", 0),
         }
         organize_status[plan_id]["done"] = True
         organize_status[plan_id]["result"] = done_payload
@@ -309,7 +310,7 @@ async def quick_organize(
                 break
         if target is None:
             return {"error": f"Directory '{dir_name}' not found"}
-        scan_results = [scanner.scan_directory(str(target), recursive=False)]
+        scan_results = [scanner.scan_directory(str(target))]
     else:
         scan_results = scanner.scan_all_watched()
 
@@ -337,6 +338,7 @@ async def quick_organize(
             "failed": len(result["errors"]),
             "errors": result["errors"],
             "records": [r.dict() for r in records],
+            "empty_dirs_removed": result.get("empty_dirs_removed", 0),
         }
     else:
         plan_store[plan.id] = plan
@@ -429,27 +431,39 @@ async def get_current_config():
     return config.dict()
 
 
+class ScanPatchBody(BaseModel):
+    max_depth: Optional[int] = None
+    skip_project_dirs: Optional[bool] = None
+    cleanup_empty_dirs: Optional[bool] = None
+
+
 class ConfigPatchBody(BaseModel):
     watch_directories: Optional[list[str]] = None
     organize_base: Optional[str] = None
+    scan: Optional[ScanPatchBody] = None
 
 
 @app.patch("/api/config")
 async def patch_config(body: ConfigPatchBody):
-    updates: dict = {}
+    kwargs: dict = {}
     if body.watch_directories is not None:
         dirs = [d.strip() for d in body.watch_directories if d and str(d).strip()]
         if not dirs:
             raise HTTPException(status_code=400, detail="watch_directories 不能为空")
-        updates["watch_directories"] = dirs
+        kwargs["watch_directories"] = dirs
     if body.organize_base is not None:
         ob = body.organize_base.strip()
         if not ob:
             raise HTTPException(status_code=400, detail="organize_base 不能为空")
-        updates["organize_base"] = ob
-    if not updates:
+        kwargs["organize_base"] = ob
+    if body.scan is not None:
+        patch = body.scan.model_dump(exclude_none=True)
+        if patch.get("max_depth") is not None and patch["max_depth"] < -1:
+            raise HTTPException(status_code=400, detail="scan.max_depth 必须 >= -1")
+        kwargs["scan"] = patch
+    if not kwargs:
         return {"ok": True, "config": get_config().dict()}
-    cfg = save_app_config(**updates)
+    cfg = save_app_config(**kwargs)
     return {"ok": True, "config": cfg.dict()}
 
 

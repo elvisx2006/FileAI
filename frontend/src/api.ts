@@ -14,11 +14,20 @@ export interface FileInfo {
   storage_state?: string;
 }
 
+export interface ScanConfigResponse {
+  max_depth: number;
+  skip_project_dirs: boolean;
+  cleanup_empty_dirs: boolean;
+  project_markers?: string[];
+  bundle_suffixes?: string[];
+}
+
 export interface AppConfigResponse {
   watch_directories: string[];
   organize_base: string;
   ai: Record<string, unknown>;
   safety: Record<string, unknown>;
+  scan?: ScanConfigResponse;
   category_tree: Record<string, unknown>;
 }
 
@@ -200,6 +209,11 @@ export async function fetchAppConfig() {
 export async function updateAppConfig(body: {
   watch_directories?: string[];
   organize_base?: string;
+  scan?: {
+    max_depth?: number;
+    skip_project_dirs?: boolean;
+    cleanup_empty_dirs?: boolean;
+  };
 }) {
   return request<{ ok: boolean; config: AppConfigResponse }>("/config", {
     method: "PATCH",
@@ -228,6 +242,7 @@ export async function getOrganizeStatus(planId: string) {
       moved?: number;
       skipped?: number;
       failed?: number;
+      empty_dirs_removed?: number;
       errors?: { file: string; error: string }[];
       error?: string;
     } | null;

@@ -873,6 +873,84 @@
   color: var(--accent);
   vertical-align: middle;
 }
+.subfolder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.subfolder-block {
+  border-bottom: 0.5px solid var(--separator);
+}
+.subfolder-block:last-child { border-bottom: none; }
+.subfolder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 8px 8px;
+  background: rgba(118, 118, 128, 0.06);
+  font-size: 13px;
+}
+.subfolder-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.subfolder-chevron:hover { color: var(--text-primary); background: var(--bg-input); }
+.subfolder-chevron-icon {
+  transition: transform 0.2s ease;
+}
+.subfolder-chevron-icon.rotated { transform: rotate(-90deg); }
+.subfolder-check { display: flex; align-items: center; margin: 0; }
+.subfolder-folder-icon { color: var(--text-tertiary); flex-shrink: 0; }
+.subfolder-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subfolder-meta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.file-list-nested {
+  padding-left: 28px;
+  background: var(--bg-card);
+}
+.setting-scan-row {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.setting-scan-label { min-width: 72px; color: var(--text-secondary); font-size: 14px; }
+.setting-select {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--separator);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.setting-scan-toggle {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.setting-scan-toggle input { margin-top: 3px; flex-shrink: 0; }
+.setting-scan-toggle span { line-height: 1.45; color: var(--text-primary); }
 .provider-badge {
   display: inline-block;
   font-size: 10px;

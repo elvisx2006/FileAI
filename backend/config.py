@@ -4,8 +4,20 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel, ConfigDict, Field
+
+_DEFAULT_PROJECT_MARKERS = frozenset({
+    ".git", ".hg", ".svn",
+    "package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json",
+    "pyproject.toml", "requirements.txt", "Pipfile", "Pipfile.lock",
+    "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+})
+
+_DEFAULT_BUNDLE_SUFFIXES = (
+    ".app", ".framework", ".bundle", ".photoslibrary", ".imovielibrary",
+    ".xcodeproj", ".xcworkspace",
+)
 
 
 class AIConfig(BaseModel):
@@ -24,11 +36,27 @@ class SafetyConfig(BaseModel):
     exclude_dirs: list[str] = Field(default_factory=lambda: [".Trash", ".git", "node_modules"])
 
 
+class ScanConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    #: -1 = unlimited recursion; 0 = watch root only; 1 = one level of subfolders; etc.
+    max_depth: int = -1
+    skip_project_dirs: bool = True
+    cleanup_empty_dirs: bool = True
+    project_markers: list[str] = Field(
+        default_factory=lambda: sorted(_DEFAULT_PROJECT_MARKERS),
+    )
+    bundle_suffixes: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_BUNDLE_SUFFIXES),
+    )
+
+
 class AppConfig(BaseModel):
     watch_directories: list[str] = Field(default_factory=lambda: ["~/Downloads", "~/Desktop", "~/Documents"])
     organize_base: str = "~/Organized"
     ai: AIConfig = Field(default_factory=AIConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    scan: ScanConfig = Field(default_factory=ScanConfig)
     category_tree: dict = Field(default_factory=dict)
 
     def get_watch_dirs(self) -> list[Path]:
@@ -62,6 +90,7 @@ def save_app_config(
     *,
     watch_directories: list[str] | None = None,
     organize_base: str | None = None,
+    scan: dict | None = None,
 ) -> AppConfig:
     """Merge updates into current config, write backend/config.yaml, refresh cache."""
     global _config
@@ -71,6 +100,12 @@ def save_app_config(
         data["watch_directories"] = watch_directories
     if organize_base is not None:
         data["organize_base"] = organize_base
+    if scan is not None:
+        cur = dict(data.get("scan") or {})
+        for k, v in scan.items():
+            if k in ScanConfig.model_fields and v is not None:
+                cur[k] = v
+        data["scan"] = ScanConfig(**cur).model_dump()
     _config = AppConfig(**data)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(
