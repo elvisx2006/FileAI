@@ -2,6 +2,7 @@ name: Build FileAI
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -59,6 +60,7 @@ jobs:
   build-tauri:
     needs: build-backend
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest

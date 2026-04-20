@@ -1,6 +1,6 @@
 {
   "productName": "FileAI",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "identifier": "com.fileai.desktop",
   "build": {
     "beforeBuildCommand": "npm run build",
