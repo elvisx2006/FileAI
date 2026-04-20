@@ -26,6 +26,8 @@ class AIConfig(BaseModel):
     fallback_model: str = "deepseek-chat"
     batch_size: int = 20
     low_confidence_threshold: float = 0.7
+    #: Parallel AI batches (respect provider rate limits; typical 4–8).
+    max_classify_workers: int = 4
     base_url: str = ""
 
 

@@ -118,17 +118,26 @@ export async function scanAll() {
   }>("/scan");
 }
 
-export async function classifyFiles(files: FileInfo[]) {
+export async function classifyFiles(files: FileInfo[], options?: { persistPlan?: boolean }) {
+  const persistPlan = options?.persistPlan !== false;
   return request<{
-    plan_id: string;
+    plan_id: string | null;
     total: number;
     rule_classified: number;
     ai_classified: number;
     items: ClassifyItem[];
-  }>("/classify", {
+  }>(`/classify?persist_plan=${persistPlan}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(files),
+  });
+}
+
+export async function buildPlanFromItems(items: ClassifyItem[]) {
+  return request<{ plan_id: string }>("/plan/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(items),
   });
 }
 

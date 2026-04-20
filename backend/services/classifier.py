@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
 from typing import Optional
 
 from openai import OpenAI
@@ -218,21 +221,47 @@ def classify_with_ai(files: list[FileInfo], model: str = None) -> list[ClassifyR
         ]
 
 
+def _run_ai_batch(idx: int, batch: list[FileInfo]) -> tuple[int, list[ClassifyResult]]:
+    return idx, classify_with_ai(batch)
+
+
 def classify_batch(
     files: list[FileInfo],
-    on_progress: "Callable[[int, int], None] | None" = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ClassifyResult]:
     """Classify files in batches respecting the configured batch size."""
     config = get_config()
     batch_size = config.ai.batch_size
-    all_results = []
     total = len(files)
+    if total == 0:
+        return []
 
-    for i in range(0, total, batch_size):
-        batch = files[i : i + batch_size]
-        results = classify_with_ai(batch)
-        all_results.extend(results)
-        if on_progress:
-            on_progress(min(i + batch_size, total), total)
+    batches = [files[i : i + batch_size] for i in range(0, total, batch_size)]
+    max_workers = max(1, min(config.ai.max_classify_workers, len(batches)))
 
-    return all_results
+    if max_workers == 1 or len(batches) == 1:
+        all_results: list[ClassifyResult] = []
+        for i, batch in enumerate(batches):
+            all_results.extend(classify_with_ai(batch))
+            if on_progress:
+                on_progress(min((i + 1) * batch_size, total), total)
+        return all_results
+
+    results_by_idx: dict[int, list[ClassifyResult]] = {}
+    lock = threading.Lock()
+    done_items = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_to_idx = {ex.submit(_run_ai_batch, i, b): i for i, b in enumerate(batches)}
+        for fut in as_completed(future_to_idx):
+            idx, batch_results = fut.result()
+            results_by_idx[idx] = batch_results
+            if on_progress:
+                with lock:
+                    done_items += len(batch_results)
+                    on_progress(done_items, total)
+
+    ordered: list[ClassifyResult] = []
+    for i in range(len(batches)):
+        ordered.extend(results_by_idx[i])
+    return ordered

@@ -172,7 +172,7 @@ def classify_batch_by_rules(files: list[FileInfo]) -> tuple[list[ClassifyResult]
     needs_ai = []
     for f in files:
         result = classify_by_rules(f)
-        if result and result.confidence >= 0.8:
+        if result:
             classified.append(result)
         else:
             needs_ai.append(f)

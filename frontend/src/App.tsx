@@ -35,6 +35,7 @@ import {
 import {
   scanAll,
   classifyFiles,
+  buildPlanFromItems,
   confirmPlan,
   undoOperation,
   getHistory,
@@ -60,6 +61,10 @@ import {
 import "./App.css";
 
 type Page = "dashboard" | "organize" | "history" | "settings" | "browse";
+
+/** Per-request file count for /classify to avoid huge JSON payloads on the main thread. */
+const CLASSIFY_CHUNK_SIZE = 2500;
+const CLASSIFY_PREVIEW_PAGE = 500;
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   Documents: <FileText size={16} />,
@@ -224,6 +229,9 @@ export default function App() {
   const [cfgSkipProject, setCfgSkipProject] = useState(true);
   const [cfgCleanupEmpty, setCfgCleanupEmpty] = useState(true);
   const [collapsedSubfolders, setCollapsedSubfolders] = useState<Set<string>>(() => new Set());
+  /** Default off: skip *.icloud placeholders to cut volume and avoid download-at-execute surprises. */
+  const [includeIcloudInClassify, setIncludeIcloudInClassify] = useState(false);
+  const [classifyPreviewLimit, setClassifyPreviewLimit] = useState(CLASSIFY_PREVIEW_PAGE);
 
   // Live feed collapse
   const [liveOpen, setLiveOpen] = useState(false);
@@ -248,6 +256,19 @@ export default function App() {
       .sort(([, a], [, b]) => (b as number) - (a as number))
       .slice(0, 8) as [string, number][];
   }, [stats]);
+
+  const classifyStats = useMemo(() => {
+    if (!classifyResult) return { high: 0, mid: 0, low: 0 };
+    let high = 0;
+    let mid = 0;
+    let low = 0;
+    for (const i of classifyResult) {
+      if (i.confidence >= 0.85) high++;
+      else if (i.confidence >= 0.7) mid++;
+      else low++;
+    }
+    return { high, mid, low };
+  }, [classifyResult]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -396,17 +417,55 @@ export default function App() {
   const handleClassify = async () => {
     if (selectedFiles.size === 0) return showToast("请先选择文件");
     setLoading(true);
-    setProgress({ current: 0, total: selectedFiles.size, stage: "classify" });
+    let allFiles = scanData.flatMap((d) => d.files).filter((f) => selectedFiles.has(f.path));
+    if (!includeIcloudInClassify) {
+      const before = allFiles.length;
+      allFiles = allFiles.filter((f) => f.storage_state !== "icloud_placeholder");
+      const skipped = before - allFiles.length;
+      if (skipped > 0) {
+        showToast(`已跳过 ${skipped} 个仅 iCloud 占位文件（勾选「包含 iCloud 占位」可参与分类）`);
+      }
+    }
+    if (allFiles.length === 0) {
+      showToast("没有可分类的文件；请勾选「包含 iCloud 占位」或重新选择");
+      setLoading(false);
+      return;
+    }
+    setProgress({ current: 0, total: allFiles.length, stage: "classify" });
     try {
-      const allFiles = scanData.flatMap((d) => d.files).filter((f) => selectedFiles.has(f.path));
-      const result = await classifyFiles(allFiles);
-      setClassifyResult(result.items);
-      setPlanId(result.plan_id);
-      showToast(`分类完成: 规则 ${result.rule_classified} 个, AI ${result.ai_classified} 个`);
-    } catch (e: any) {
+      if (allFiles.length <= CLASSIFY_CHUNK_SIZE) {
+        const result = await classifyFiles(allFiles, { persistPlan: true });
+        setClassifyResult(result.items);
+        setPlanId(result.plan_id);
+        setClassifyPreviewLimit(CLASSIFY_PREVIEW_PAGE);
+        showToast(`分类完成: 规则 ${result.rule_classified} 个, AI ${result.ai_classified} 个`);
+      } else {
+        const mergedItems: ClassifyItem[] = [];
+        let totalRule = 0;
+        let totalAi = 0;
+        for (let offset = 0; offset < allFiles.length; offset += CLASSIFY_CHUNK_SIZE) {
+          const chunk = allFiles.slice(offset, offset + CLASSIFY_CHUNK_SIZE);
+          const result = await classifyFiles(chunk, { persistPlan: false });
+          mergedItems.push(...result.items);
+          totalRule += result.rule_classified;
+          totalAi += result.ai_classified;
+          setProgress({
+            current: Math.min(offset + chunk.length, allFiles.length),
+            total: allFiles.length,
+            stage: "classify",
+          });
+        }
+        const { plan_id } = await buildPlanFromItems(mergedItems);
+        setClassifyResult(mergedItems);
+        setPlanId(plan_id);
+        setClassifyPreviewLimit(CLASSIFY_PREVIEW_PAGE);
+        showToast(`分类完成: 规则 ${totalRule} 个, AI ${totalAi} 个`);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "网络错误或后端未启动，请检查后端服务是否正常运行。";
       setErrorInfo({
         title: "AI 分类失败",
-        detail: e?.message || "网络错误或后端未启动，请检查后端服务是否正常运行。",
+        detail: msg,
       });
     }
     setProgress(null);
@@ -822,6 +881,15 @@ export default function App() {
                     />
                     全选 ({selectedFiles.size}/{scanData.flatMap((d) => d.files).length})
                   </label>
+                  <label className="check-all check-icloud" title="关闭时：仅 iCloud 占位（未下载）的文件不参与分类，可显著减少请求量">
+                    <input
+                      type="checkbox"
+                      checked={includeIcloudInClassify}
+                      onChange={() => setIncludeIcloudInClassify((v) => !v)}
+                    />
+                    <Cloud size={14} />
+                    包含 iCloud 占位
+                  </label>
                 </div>
                 {scanData.map((dir) => {
                   const subGroups = groupFilesByParent(dir.files, dir.directory);
@@ -897,16 +965,23 @@ export default function App() {
               <div className="classify-panel">
                 <div className="panel-header">
                   <Eye size={16} />
-                  <span>分类预览 — {classifyResult.length} 个文件</span>
+                  <span>
+                    分类预览 — {classifyResult.length} 个文件
+                    {classifyResult.length > classifyPreviewLimit && (
+                      <span className="classify-preview-hint">
+                        （列表显示前 {Math.min(classifyPreviewLimit, classifyResult.length)} 条，可加载更多）
+                      </span>
+                    )}
+                  </span>
                   <div className="confidence-summary">
-                    <span className="conf-badge high">{classifyResult.filter((i) => i.confidence >= 0.85).length} 高</span>
-                    <span className="conf-badge mid">{classifyResult.filter((i) => i.confidence >= 0.7 && i.confidence < 0.85).length} 中</span>
-                    <span className="conf-badge low">{classifyResult.filter((i) => i.confidence < 0.7).length} 低</span>
+                    <span className="conf-badge high">{classifyStats.high} 高</span>
+                    <span className="conf-badge mid">{classifyStats.mid} 中</span>
+                    <span className="conf-badge low">{classifyStats.low} 低</span>
                   </div>
                 </div>
                 <div className="classify-list">
-                  {classifyResult.map((item, i) => (
-                    <div className="classify-row" key={i}>
+                  {classifyResult.slice(0, classifyPreviewLimit).map((item) => (
+                    <div className="classify-row" key={item.original_path}>
                       <div className="classify-left">
                         <span className="classify-file">{item.original_path.split("/").pop()}</span>
                         <span className="classify-reason">{item.reason}</span>
@@ -923,6 +998,19 @@ export default function App() {
                       </div>
                     </div>
                   ))}
+                  {classifyResult.length > classifyPreviewLimit && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary classify-load-more"
+                      onClick={() =>
+                        setClassifyPreviewLimit((n) =>
+                          Math.min(n + CLASSIFY_PREVIEW_PAGE, classifyResult.length),
+                        )
+                      }
+                    >
+                      加载更多（+{CLASSIFY_PREVIEW_PAGE}）
+                    </button>
+                  )}
                 </div>
               </div>
             )}

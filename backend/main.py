@@ -126,7 +126,7 @@ async def scan_one(dir_name: str):
 # ── Classify ────────────────────────────────────────────
 
 @app.post("/api/classify")
-async def classify_files(files: list[dict]):
+async def classify_files(files: list[dict], persist_plan: bool = True):
     file_infos = [FileInfo(**f) for f in files]
 
     rule_results, needs_ai = rule_engine.classify_batch_by_rules(file_infos)
@@ -164,8 +164,11 @@ async def classify_files(files: list[dict]):
         )
 
     all_results = rule_results + ai_results
-    plan = organizer.build_plan(all_results, dry_run=True)
-    plan_store[plan.id] = plan
+    plan_id: str | None = None
+    if persist_plan:
+        plan = organizer.build_plan(all_results, dry_run=True)
+        plan_store[plan.id] = plan
+        plan_id = plan.id
 
     await broadcast({
         "type": "classify_progress",
@@ -175,12 +178,23 @@ async def classify_files(files: list[dict]):
     })
 
     return {
-        "plan_id": plan.id,
+        "plan_id": plan_id,
         "total": len(all_results),
         "rule_classified": len(rule_results),
         "ai_classified": len(ai_results),
         "items": [r.dict() for r in all_results],
     }
+
+
+@app.post("/api/plan/build")
+async def build_plan_from_classify_items(items: list[dict]):
+    """Create a single execution plan from merged classification rows (e.g. after chunked /classify)."""
+    if not items:
+        raise HTTPException(status_code=400, detail="items 不能为空")
+    results = [ClassifyResult(**i) for i in items]
+    plan = organizer.build_plan(results, dry_run=True)
+    plan_store[plan.id] = plan
+    return {"plan_id": plan.id}
 
 
 # ── Organize ───────────────────────────────────────────
