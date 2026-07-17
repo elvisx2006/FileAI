@@ -381,12 +381,61 @@ async def undo(operation_id: str):
     return {"error": "File not found at destination"}
 
 
+@app.post("/api/undo-latest")
+async def undo_latest():
+    """Undo the newest operation that has not already been undone."""
+    record = await history.get_latest_active_record()
+    if record is None:
+        return {"error": "没有可撤销的操作"}
+
+    success = organizer.undo_operation(record)
+    if success:
+        await history.mark_undone(record.id)
+        await broadcast({"type": "undo", "operation_id": record.id})
+        return {"success": True, "record": record.dict()}
+    return {"error": "目标位置中已找不到该文件，无法撤销"}
+
+
+class UndoDatesBody(BaseModel):
+    dates: list[str]
+
+
+@app.post("/api/undo-by-dates")
+async def undo_by_dates(body: UndoDatesBody):
+    dates = sorted({d for d in body.dates if len(d) == 10})
+    if not dates:
+        raise HTTPException(status_code=400, detail="请至少选择一个操作日期")
+
+    records = await history.get_active_records_by_dates(dates)
+    undone_ids: list[str] = []
+    failures: list[dict] = []
+    for record in records:
+        try:
+            if organizer.undo_operation(record):
+                await history.mark_undone(record.id)
+                undone_ids.append(record.id)
+            else:
+                failures.append({"id": record.id, "file": record.file_name, "error": "目标文件不存在"})
+        except Exception as exc:
+            failures.append({"id": record.id, "file": record.file_name, "error": str(exc)})
+
+    if undone_ids:
+        await broadcast({"type": "undo_batch", "operation_ids": undone_ids})
+    return {"success": len(failures) == 0, "undone": len(undone_ids), "failed": len(failures), "failures": failures}
+
+
 # ── History ─────────────────────────────────────────────
 
 @app.get("/api/history")
-async def get_history(page: int = 1):
-    records = await history.get_history(page)
-    return {"page": page, "records": [r.dict() for r in records]}
+async def get_history(page: int = 1, dates: Optional[str] = Query(None)):
+    selected_dates = [d for d in (dates or "").split(",") if d]
+    records = await history.get_history(page, operation_dates=selected_dates or None)
+    return {"page": page, "dates": selected_dates, "records": [r.dict() for r in records]}
+
+
+@app.get("/api/history/dates")
+async def get_history_dates():
+    return {"dates": await history.get_date_summary()}
 
 
 # ── Stats ───────────────────────────────────────────────

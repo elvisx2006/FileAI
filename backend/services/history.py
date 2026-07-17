@@ -46,14 +46,26 @@ async def mark_undone(operation_id: str):
         await db.commit()
 
 
-async def get_history(page: int = 1, page_size: int = 50) -> list[OperationRecord]:
+async def get_history(
+    page: int = 1,
+    page_size: int = 50,
+    operation_dates: Optional[list[str]] = None,
+) -> list[OperationRecord]:
     offset = (page - 1) * page_size
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM operations ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            (page_size, offset),
-        )
+        if operation_dates:
+            placeholders = ",".join("?" for _ in operation_dates)
+            cursor = await db.execute(
+                f"SELECT * FROM operations WHERE substr(timestamp, 1, 10) IN ({placeholders}) "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (*operation_dates, page_size, offset),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM operations ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                (page_size, offset),
+            )
         rows = await cursor.fetchall()
         return [
             OperationRecord(
@@ -67,6 +79,61 @@ async def get_history(page: int = 1, page_size: int = 50) -> list[OperationRecor
             )
             for row in rows
         ]
+
+
+async def get_date_summary() -> list[dict]:
+    """Return only dates that have history, newest first, with undoable counts."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT substr(timestamp, 1, 10) AS operation_date, COUNT(*) AS total, "
+            "SUM(CASE WHEN undone = 0 THEN 1 ELSE 0 END) AS active "
+            "FROM operations GROUP BY operation_date ORDER BY operation_date DESC"
+        )
+        rows = await cursor.fetchall()
+        return [{"date": row[0], "total": row[1], "active": row[2]} for row in rows]
+
+
+async def get_active_records_by_dates(operation_dates: list[str]) -> list[OperationRecord]:
+    if not operation_dates:
+        return []
+    placeholders = ",".join("?" for _ in operation_dates)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"SELECT * FROM operations WHERE undone = 0 "
+            f"AND substr(timestamp, 1, 10) IN ({placeholders}) ORDER BY timestamp DESC",
+            operation_dates,
+        )
+        rows = await cursor.fetchall()
+        return [
+            OperationRecord(
+                id=row["id"], timestamp=row["timestamp"], source_path=row["source_path"],
+                dest_path=row["dest_path"], file_name=row["file_name"],
+                operation=row["operation"], undone=False,
+            )
+            for row in rows
+        ]
+
+
+async def get_latest_active_record() -> Optional[OperationRecord]:
+    """Return the most recent operation that has not already been undone."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM operations WHERE undone = 0 ORDER BY timestamp DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return OperationRecord(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            source_path=row["source_path"],
+            dest_path=row["dest_path"],
+            file_name=row["file_name"],
+            operation=row["operation"],
+            undone=bool(row["undone"]),
+        )
 
 
 async def get_record(operation_id: str) -> Optional[OperationRecord]:

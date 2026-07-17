@@ -38,7 +38,10 @@ import {
   buildPlanFromItems,
   confirmPlan,
   undoOperation,
+  undoLatestOperation,
+  undoOperationsByDates,
   getHistory,
+  getHistoryDates,
   getStats,
   startWatcher,
   stopWatcher,
@@ -55,6 +58,7 @@ import {
   type ScanDirectory,
   type ClassifyItem,
   type OperationRecord,
+  type HistoryDateSummary,
   type OrganizedFolder,
   type FileInfo,
 } from "./api";
@@ -65,6 +69,25 @@ type Page = "dashboard" | "organize" | "history" | "settings" | "browse";
 /** Per-request file count for /classify to avoid huge JSON payloads on the main thread. */
 const CLASSIFY_CHUNK_SIZE = 2500;
 const CLASSIFY_PREVIEW_PAGE = 500;
+
+const FILE_TYPE_FILTERS = [
+  { value: "documents", label: "文档", extensions: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "csv"] },
+  { value: "images", label: "图片", extensions: ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tiff", "heic"] },
+  { value: "videos", label: "视频", extensions: ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v"] },
+  { value: "audio", label: "音频", extensions: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "aiff"] },
+  { value: "code", label: "代码", extensions: ["js", "ts", "py", "jsx", "tsx", "go", "rs", "java", "c", "cpp", "h", "rb", "php", "swift", "html", "css", "json", "yaml", "yml"] },
+  { value: "archives", label: "压缩包", extensions: ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"] },
+  { value: "design", label: "设计文件", extensions: ["psd", "ai", "sketch", "fig", "xd"] },
+] as const;
+
+function normalizedExtension(file: FileInfo): string {
+  return (file.extension || file.name.split(".").pop() || "").toLowerCase().replace(/^\./, "");
+}
+
+function formatOperationDate(date: string): string {
+  const [year, month, day] = date.split("-");
+  return `${year}年${Number(month)}月${Number(day)}日`;
+}
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   Documents: <FileText size={16} />,
@@ -210,6 +233,11 @@ export default function App() {
   // History
   const [historyData, setHistoryData] = useState<OperationRecord[]>([]);
   const [historyPage, setHistoryPage] = useState(1);
+  const [historyDates, setHistoryDates] = useState<HistoryDateSummary[]>([]);
+  const [selectedHistoryDates, setSelectedHistoryDates] = useState<Set<string>>(new Set());
+  const [historyDateMenuOpen, setHistoryDateMenuOpen] = useState(false);
+  const [undoingDates, setUndoingDates] = useState(false);
+  const [undoingLatest, setUndoingLatest] = useState(false);
 
   // Watcher
   const [watcherRunning, setWatcherRunning] = useState(false);
@@ -270,6 +298,15 @@ export default function App() {
     return { high, mid, low };
   }, [classifyResult]);
 
+  const subfolderKeys = useMemo(
+    () => scanData.flatMap((dir) => groupFilesByParent(dir.files, dir.directory).map((g) => `${dir.directory}\0${g.parentDir}`)),
+    [scanData],
+  );
+  const allSubfoldersCollapsed = subfolderKeys.length > 0 && subfolderKeys.every((key) => collapsedSubfolders.has(key));
+  const selectedDateActiveCount = historyDates
+    .filter((item) => selectedHistoryDates.has(item.date))
+    .reduce((sum, item) => sum + item.active, 0);
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
@@ -320,6 +357,7 @@ export default function App() {
       }
     });
     getWatcherStatus().then((s) => setWatcherRunning(s.running)).catch(() => {});
+    getOrganizedTree().then((d) => setOrganizedBase(d.base)).catch(() => {});
     return () => wsRef.current?.close();
   }, [showToast]);
 
@@ -327,7 +365,8 @@ export default function App() {
     if (page === "dashboard") {
       getStats().then(setStats).catch(() => {});
     } else if (page === "history") {
-      getHistory(historyPage).then((d) => setHistoryData(d.records)).catch(() => {});
+      getHistory(historyPage, [...selectedHistoryDates]).then((d) => setHistoryData(d.records)).catch(() => {});
+      getHistoryDates().then((d) => setHistoryDates(d.dates)).catch(() => {});
     } else if (page === "browse") {
       getOrganizedTree().then((d) => {
         setOrganizedFolders(d.folders);
@@ -355,7 +394,7 @@ export default function App() {
         })
         .catch(() => setIcloudHint(null));
     }
-  }, [page, historyPage, showToast]);
+  }, [page, historyPage, selectedHistoryDates, showToast]);
 
   const ICLOUD_WATCH_PRESET = "~/Library/Mobile Documents/com~apple~CloudDocs";
 
@@ -562,9 +601,57 @@ export default function App() {
     const result = await undoOperation(id);
     if (result.success) {
       showToast("撤销成功");
-      getHistory(historyPage).then((d) => setHistoryData(d.records));
+      getHistory(historyPage, [...selectedHistoryDates]).then((d) => setHistoryData(d.records));
+      getHistoryDates().then((d) => setHistoryDates(d.dates));
     } else {
       showToast(result.error || "撤销失败");
+    }
+  };
+
+  const handleUndoLatest = async () => {
+    setUndoingLatest(true);
+    try {
+      const result = await undoLatestOperation();
+      if (result.success) {
+        showToast(`已撤销：${result.record?.file_name || "最近一次操作"}`);
+        const data = await getHistory(historyPage, [...selectedHistoryDates]);
+        setHistoryData(data.records);
+        getHistoryDates().then((d) => setHistoryDates(d.dates));
+      } else {
+        showToast(result.error || "撤销失败");
+      }
+    } finally {
+      setUndoingLatest(false);
+    }
+  };
+
+  const toggleHistoryDate = (date: string) => {
+    setSelectedHistoryDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(date)) next.delete(date); else next.add(date);
+      return next;
+    });
+    setHistoryPage(1);
+  };
+
+  const handleUndoSelectedDates = async () => {
+    if (selectedHistoryDates.size === 0) return;
+    setUndoingDates(true);
+    try {
+      const result = await undoOperationsByDates([...selectedHistoryDates]);
+      if (result.failed > 0) {
+        showToast(`已撤销 ${result.undone} 个操作，${result.failed} 个失败`);
+      } else {
+        showToast(`已撤销所选日期下的 ${result.undone} 个操作`);
+      }
+      const [historyResult, datesResult] = await Promise.all([
+        getHistory(historyPage, [...selectedHistoryDates]),
+        getHistoryDates(),
+      ]);
+      setHistoryData(historyResult.records);
+      setHistoryDates(datesResult.dates);
+    } finally {
+      setUndoingDates(false);
     }
   };
 
@@ -618,6 +705,29 @@ export default function App() {
     }
   };
 
+  const toggleAllSubfolders = () => {
+    setCollapsedSubfolders(allSubfoldersCollapsed ? new Set() : new Set(subfolderKeys));
+  };
+
+  const selectFilesByType = (type: string) => {
+    const allFiles = scanData.flatMap((d) => d.files);
+    if (type === "all") {
+      setSelectedFiles(new Set(allFiles.map((f) => f.path)));
+      showToast(`已选择全部 ${allFiles.length} 个文件`);
+      return;
+    }
+
+    const knownExtensions = new Set<string>(FILE_TYPE_FILTERS.flatMap((item) => [...item.extensions]));
+    const filter = FILE_TYPE_FILTERS.find((item) => item.value === type);
+    const extensions = new Set<string>(filter?.extensions || []);
+    const matched = allFiles.filter((file) => {
+      const ext = normalizedExtension(file);
+      return type === "other" ? !knownExtensions.has(ext) : extensions.has(ext);
+    });
+    setSelectedFiles(new Set(matched.map((f) => f.path)));
+    showToast(`已选择${filter?.label || "其他"}文件 ${matched.length} 个`);
+  };
+
   return (
     <div className="app">
       {/* Sidebar */}
@@ -647,6 +757,14 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          <button className="organized-shortcut" onClick={() => openFolder("organized")} title={organizedBase || "整理后的文件目录"}>
+            <FolderOpen size={15} />
+            <span>
+              <strong>整理位置</strong>
+              <small>{organizedBase ? organizedBase.replace(/\/Users\/[^/]+\//, "~/") : "点击打开"}</small>
+            </span>
+            <ExternalLink size={12} />
+          </button>
           <div className={`watcher-badge ${watcherRunning ? "running" : ""}`}>
             <div className="watcher-dot" />
             <span>{watcherRunning ? "监控中" : "监控关闭"}</span>
@@ -872,15 +990,12 @@ export default function App() {
             {/* File list or classify result */}
             {!classifyResult && scanData.length > 0 && (
               <div className="file-panel">
-                <div className="panel-header">
-                  <label className="check-all">
-                    <input
-                      type="checkbox"
-                      checked={selectedFiles.size === scanData.flatMap((d) => d.files).length && selectedFiles.size > 0}
-                      onChange={toggleAllFiles}
-                    />
-                    全选 ({selectedFiles.size}/{scanData.flatMap((d) => d.files).length})
-                  </label>
+                <div className="file-toolbar-summary">
+                  <div className="file-toolbar-title">
+                    <FolderTree size={16} />
+                    <span>扫描结果</span>
+                    <span className="file-toolbar-total">{scanData.flatMap((d) => d.files).length} 个文件</span>
+                  </div>
                   <label className="check-all check-icloud" title="关闭时：仅 iCloud 占位（未下载）的文件不参与分类，可显著减少请求量">
                     <input
                       type="checkbox"
@@ -890,6 +1005,35 @@ export default function App() {
                     <Cloud size={14} />
                     包含 iCloud 占位
                   </label>
+                </div>
+                <div className="file-toolbar-actions">
+                  <div className="file-selection-group">
+                    <label className="check-all">
+                      <input
+                        type="checkbox"
+                        checked={selectedFiles.size === scanData.flatMap((d) => d.files).length && selectedFiles.size > 0}
+                        onChange={toggleAllFiles}
+                      />
+                      <span>全选</span>
+                    </label>
+                    <span className="selection-count">已选择 {selectedFiles.size} / {scanData.flatMap((d) => d.files).length}</span>
+                  </div>
+                  <div className="toolbar-divider" />
+                  <div className="file-quick-actions">
+                    <label className="type-picker">
+                      <span>按类型选择</span>
+                      <select defaultValue="" onChange={(e) => { if (e.target.value) selectFilesByType(e.target.value); e.target.value = ""; }}>
+                        <option value="" disabled>选择文件类型</option>
+                        <option value="all">全部文件</option>
+                        {FILE_TYPE_FILTERS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                        <option value="other">其他</option>
+                      </select>
+                    </label>
+                    <button type="button" className="btn btn-secondary btn-sm folder-toggle-all" onClick={toggleAllSubfolders}>
+                      <ChevronDown size={14} className={allSubfoldersCollapsed ? "subfolder-chevron-icon rotated" : "subfolder-chevron-icon"} />
+                      {allSubfoldersCollapsed ? "展开全部文件夹" : "收起全部文件夹"}
+                    </button>
+                  </div>
                 </div>
                 {scanData.map((dir) => {
                   const subGroups = groupFilesByParent(dir.files, dir.directory);
@@ -1030,9 +1174,43 @@ export default function App() {
           <div className="page">
             <div className="page-header">
               <h1 className="page-title">操作历史</h1>
-              <button className="btn btn-secondary" onClick={() => getHistory(historyPage).then((d) => setHistoryData(d.records))}>
-                <RefreshCw size={16} /> 刷新
+              <div className="header-actions">
+                <button className="btn btn-danger" disabled={undoingLatest} onClick={() => void handleUndoLatest()}>
+                  <Undo2 size={16} /> {undoingLatest ? "撤销中…" : "撤销最近一次"}
+                </button>
+                <button className="btn btn-secondary" onClick={() => getHistory(historyPage, [...selectedHistoryDates]).then((d) => setHistoryData(d.records))}>
+                  <RefreshCw size={16} /> 刷新
+                </button>
+              </div>
+            </div>
+            <div className="history-toolbar">
+              <span className="history-filter-label">操作日期</span>
+              <div className="history-date-picker">
+                <button type="button" className={`history-date-trigger ${historyDateMenuOpen ? "open" : ""}`} onClick={() => setHistoryDateMenuOpen((v) => !v)}>
+                  <span>{selectedHistoryDates.size > 0 ? `已选择 ${selectedHistoryDates.size} 个日期` : "选择操作日期"}</span>
+                  <ChevronDown size={15} className={historyDateMenuOpen ? "rotated" : ""} />
+                </button>
+                {historyDateMenuOpen && (
+                  <div className="history-date-menu">
+                    <div className="history-date-menu-header">
+                      <span>按操作日期筛选</span>
+                      {selectedHistoryDates.size > 0 && <button onClick={() => { setSelectedHistoryDates(new Set()); setHistoryPage(1); }}>清除</button>}
+                    </div>
+                    {historyDates.map((item) => (
+                      <label className="history-date-option" key={item.date}>
+                        <input type="checkbox" checked={selectedHistoryDates.has(item.date)} onChange={() => toggleHistoryDate(item.date)} />
+                        <span className="history-date-name">{formatOperationDate(item.date)}</span>
+                        <span className="history-date-count">{item.active > 0 ? `${item.active} 个可撤销` : `共 ${item.total} 个`}</span>
+                      </label>
+                    ))}
+                    {historyDates.length === 0 && <p className="history-date-empty">暂无操作日期</p>}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-danger btn-sm" disabled={selectedDateActiveCount === 0 || undoingDates} onClick={() => void handleUndoSelectedDates()}>
+                <Undo2 size={14} /> {undoingDates ? "批量撤销中…" : `撤销所选日期${selectedDateActiveCount > 0 ? `（${selectedDateActiveCount}）` : ""}`}
               </button>
+              <span className="history-hint">可逐条撤销；目标路径可点击打开</span>
             </div>
             <div className="history-table">
               <div className="table-header">
@@ -1047,7 +1225,9 @@ export default function App() {
                   <span className="col-time">{formatTime(rec.timestamp)}</span>
                   <span className="col-file">{rec.file_name}</span>
                   <span className="col-from">{rec.source_path.replace(/\/Users\/[^/]+\//, "~/")}</span>
-                  <span className="col-to">{rec.dest_path.split("Organized/")[1] || rec.dest_path}</span>
+                  <button className="col-to path-link" title={rec.dest_path} onClick={() => openFolder(rec.dest_path.substring(0, rec.dest_path.lastIndexOf("/")))}>
+                    {rec.dest_path.split("Organized/")[1] || rec.dest_path}
+                  </button>
                   <span className="col-action">
                     {rec.undone ? (
                       <span className="undone-label">已撤销</span>
