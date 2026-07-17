@@ -166,10 +166,41 @@ export async function undoOperation(operationId: string) {
   );
 }
 
-export async function getHistory(page: number = 1) {
-  return request<{ page: number; records: OperationRecord[] }>(
-    `/history?page=${page}`,
+export async function undoLatestOperation() {
+  return request<{ success?: boolean; error?: string; record?: OperationRecord }>(
+    "/undo-latest",
+    { method: "POST" },
   );
+}
+
+export interface HistoryDateSummary {
+  date: string;
+  total: number;
+  active: number;
+}
+
+export async function getHistory(page: number = 1, dates: string[] = []) {
+  const dateQuery = dates.length ? `&dates=${encodeURIComponent(dates.join(","))}` : "";
+  return request<{ page: number; records: OperationRecord[] }>(
+    `/history?page=${page}${dateQuery}`,
+  );
+}
+
+export async function getHistoryDates() {
+  return request<{ dates: HistoryDateSummary[] }>("/history/dates");
+}
+
+export async function undoOperationsByDates(dates: string[]) {
+  return request<{
+    success: boolean;
+    undone: number;
+    failed: number;
+    failures: { id: string; file: string; error: string }[];
+  }>("/undo-by-dates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dates }),
+  });
 }
 
 export async function getStats() {
