@@ -36,6 +36,8 @@ import {
   scanAll,
   classifyFilesResilient,
   buildPlanFromSession,
+  getAiKeyStatus,
+  saveAiKey,
   confirmPlan,
   undoOperation,
   undoLatestOperation,
@@ -259,6 +261,9 @@ export default function App() {
   const [collapsedSubfolders, setCollapsedSubfolders] = useState<Set<string>>(() => new Set());
   /** Default off: skip *.icloud placeholders to cut volume and avoid download-at-execute surprises. */
   const [includeIcloudInClassify, setIncludeIcloudInClassify] = useState(false);
+  const [aiKeyStatus, setAiKeyStatus] = useState<{ env_key: string; configured: boolean; masked: string } | null>(null);
+  const [aiKeyInput, setAiKeyInput] = useState("");
+  const [aiKeySaving, setAiKeySaving] = useState(false);
   const [classifyPreviewLimit, setClassifyPreviewLimit] = useState(CLASSIFY_PREVIEW_PAGE);
 
   // Live feed collapse
@@ -373,6 +378,7 @@ export default function App() {
         setOrganizedBase(d.base);
       }).catch(() => {});
     } else if (page === "settings") {
+      getAiKeyStatus().then(setAiKeyStatus).catch(() => setAiKeyStatus(null));
       setCfgLoading(true);
       fetchAppConfig()
         .then((c) => {
@@ -404,6 +410,21 @@ export default function App() {
       if (prev.some((p) => norm(p) === norm(ICLOUD_WATCH_PRESET))) return prev;
       return [...prev, ICLOUD_WATCH_PRESET];
     });
+  };
+
+  const handleSaveAiKey = async () => {
+    const key = aiKeyInput.trim();
+    if (!key) return showToast("请输入 API Key");
+    setAiKeySaving(true);
+    try {
+      await saveAiKey(key);
+      setAiKeyInput("");
+      setAiKeyStatus(await getAiKeyStatus());
+      showToast("API Key 已保存，立即生效");
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "保存失败");
+    }
+    setAiKeySaving(false);
   };
 
   const savePathSettings = async () => {
@@ -1419,6 +1440,29 @@ export default function App() {
               </div>
               <div className="setting-group">
                 <h3>AI 模型</h3>
+                <p className="setting-desc">
+                  API Key（{aiKeyStatus?.env_key ?? "DEEPSEEK_API_KEY"}）：
+                  {aiKeyStatus?.configured ? `已配置 ${aiKeyStatus.masked}` : "未配置 — 规则无法识别的文件需要它才能 AI 分类"}
+                </p>
+                <div className="setting-item setting-path-row">
+                  <input
+                    type="password"
+                    className="setting-path-input"
+                    value={aiKeyInput}
+                    onChange={(e) => setAiKeyInput(e.target.value)}
+                    placeholder={aiKeyStatus?.configured ? "输入新 Key 以替换" : "sk-..."}
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void handleSaveAiKey()}
+                    disabled={aiKeySaving}
+                  >
+                    {aiKeySaving ? "保存中…" : "保存 Key"}
+                  </button>
+                </div>
+                <p className="setting-desc">保存在本机 ~/.fileai/.env，不会上传。</p>
                 <div className="setting-item highlight">
                   <span className="provider-badge deepseek">DeepSeek V3</span>
                   deepseek-chat — 当前使用

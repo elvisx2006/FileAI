@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 
 _env_path = Path(__file__).parent / ".env"
 load_dotenv(_env_path)
+# User-level keys (writable in packaged app) take precedence over bundled defaults.
+USER_ENV_PATH = Path.home() / ".fileai" / ".env"
+load_dotenv(USER_ENV_PATH, override=True)
 
 import asyncio
 import json
@@ -15,7 +18,8 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -84,7 +88,7 @@ async def lifespan(app: FastAPI):
         logger.info("Backend stopped")
 
 
-app = FastAPI(title="File Organizer API", version="1.5.2", lifespan=lifespan)
+app = FastAPI(title="File Organizer API", version="1.5.3", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -93,6 +97,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Runs outside CORSMiddleware, so add the header or WebView reports only "Load failed".
+    logger.exception("Unhandled error on %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 # ── Health ──────────────────────────────────────────────
@@ -157,6 +172,11 @@ async def classify_files(
     })
 
     ai_results = []
+    if needs_ai and not classifier.has_api_key():
+        raise HTTPException(
+            status_code=400,
+            detail=f"未配置 AI API Key（需要 {classifier.required_env_key()}）。请在「设置 → AI 模型」中填写后重试。",
+        )
     if needs_ai:
         loop = asyncio.get_running_loop()
 
@@ -518,6 +538,44 @@ async def stop_watcher():
 @app.get("/api/watcher/status")
 async def watcher_status():
     return {"running": watcher.is_running}
+
+
+# ── AI key ──────────────────────────────────────────────
+
+class ApiKeyBody(BaseModel):
+    api_key: str
+
+
+@app.get("/api/ai-key")
+async def get_ai_key_status():
+    key = os.environ.get(classifier.required_env_key(), "")
+    return {
+        "provider": get_config().ai.provider,
+        "env_key": classifier.required_env_key(),
+        "configured": bool(key),
+        "masked": f"{key[:4]}…{key[-4:]}" if len(key) > 8 else "",
+    }
+
+
+@app.post("/api/ai-key")
+async def set_ai_key(body: ApiKeyBody):
+    key = body.api_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="API Key 不能为空")
+    env_name = classifier.required_env_key()
+    USER_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if USER_ENV_PATH.exists():
+        lines = [
+            ln for ln in USER_ENV_PATH.read_text(encoding="utf-8").splitlines()
+            if not ln.startswith(f"{env_name}=")
+        ]
+    lines.append(f"{env_name}={key}")
+    USER_ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(USER_ENV_PATH, 0o600)
+    os.environ[env_name] = key
+    classifier.reset_clients()
+    return {"ok": True, "env_key": env_name}
 
 
 # ── Config ──────────────────────────────────────────────

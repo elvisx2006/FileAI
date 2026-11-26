@@ -221,6 +221,18 @@ export async function classifyFilesResilient(
   }
 }
 
+export async function getAiKeyStatus() {
+  return request<{ provider: string; env_key: string; configured: boolean; masked: string }>("/ai-key");
+}
+
+export async function saveAiKey(apiKey: string) {
+  return request<{ ok: boolean; env_key: string }>("/ai-key", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
 export async function buildPlanFromItems(items: ClassifyItem[]) {
   return request<{ plan_id: string; total?: number }>("/plan/build", {
     method: "POST",

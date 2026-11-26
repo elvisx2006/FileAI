@@ -97,6 +97,19 @@ PROVIDER_CONFIG = {
 _clients: dict[str, OpenAI] = {}
 
 
+def required_env_key(provider: str | None = None) -> str:
+    provider = provider or get_config().ai.provider
+    return PROVIDER_CONFIG.get(provider, {}).get("env_key", "OPENAI_API_KEY")
+
+
+def has_api_key(provider: str | None = None) -> bool:
+    return bool(os.environ.get(required_env_key(provider), "").strip())
+
+
+def reset_clients() -> None:
+    _clients.clear()
+
+
 def _get_client(provider: str = None, base_url: str = None) -> tuple[OpenAI, str]:
     """Get or create an OpenAI-compatible client for the given provider.
     Returns (client, model_name)."""
@@ -150,7 +163,20 @@ def classify_with_ai(files: list[FileInfo], model: str = None) -> list[ClassifyR
         return []
 
     config = get_config()
-    client, default_model = _get_client()
+    try:
+        client, default_model = _get_client()
+    except Exception as e:
+        logger.error(f"AI client init failed: {e}")
+        return [
+            ClassifyResult(
+                original_path=f.path,
+                target_folder="Misc/Needs_Review",
+                confidence=0.0,
+                reason=f"AI 客户端初始化失败: {str(e)[:80]}",
+                source="ai",
+            )
+            for f in files
+        ]
     model = model or default_model
 
     file_data = [
