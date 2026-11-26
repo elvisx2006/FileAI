@@ -69,18 +69,34 @@ class ApiError extends Error {
   }
 }
 
+function isLikelyPayloadOrTimeoutFailure(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("load failed") ||
+    m.includes("failed to fetch") ||
+    m.includes("networkerror") ||
+    m.includes("the operation was aborted") ||
+    m.includes("aborted")
+  );
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const fullUrl = `${API_BASE}${url}`;
   let res: Response;
   try {
     res = await fetch(fullUrl, init);
   } catch (e: any) {
+    const raw = e?.message || "未知错误";
     const healthOk = await checkHealth();
-    const hint = healthOk
+    let hint = healthOk
       ? "后端正在运行，但此请求失败了。"
       : "无法连接后端服务（127.0.0.1:8000），后端可能已崩溃。";
+    if (healthOk && isLikelyPayloadOrTimeoutFailure(raw)) {
+      hint +=
+        "\n常见原因：单次提交文件过多或 AI 分类耗时过长，WebView 断开了连接。请减少勾选数量或等待分块自动重试。";
+    }
     throw new ApiError(
-      `网络请求失败: ${e?.message || "未知错误"}\n\n${hint}\n\n请求地址: ${fullUrl}`,
+      `网络请求失败: ${raw}\n\n${hint}\n\n请求地址: ${fullUrl}`,
       0,
       fullUrl,
       "",
@@ -101,6 +117,20 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** Slim fields for classify POST — keeps JSON small for WKWebView. */
+export function toClassifyPayload(f: FileInfo) {
+  return {
+    path: f.path,
+    name: f.name,
+    extension: f.extension,
+    size: f.size,
+    modified_time: f.modified_time,
+    modified_date: f.modified_date,
+    parent_dir: f.parent_dir,
+    storage_state: f.storage_state ?? "local",
+  };
+}
+
 async function checkHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
@@ -118,26 +148,92 @@ export async function scanAll() {
   }>("/scan");
 }
 
-export async function classifyFiles(files: FileInfo[], options?: { persistPlan?: boolean }) {
-  const persistPlan = options?.persistPlan !== false;
-  return request<{
-    plan_id: string | null;
-    total: number;
-    rule_classified: number;
-    ai_classified: number;
-    items: ClassifyItem[];
-  }>(`/classify?persist_plan=${persistPlan}`, {
+export type ClassifyResponse = {
+  plan_id: string | null;
+  total: number;
+  rule_classified: number;
+  ai_classified: number;
+  session_id?: string | null;
+  session_count?: number;
+  items: ClassifyItem[];
+};
+
+export async function classifyFiles(
+  files: FileInfo[],
+  options?: { persistPlan?: boolean; sessionId?: string; timeoutMs?: number },
+) {
+  const persistPlan = options?.persistPlan === true;
+  const params = new URLSearchParams({ persist_plan: String(persistPlan) });
+  if (options?.sessionId) params.set("session_id", options.sessionId);
+  const timeoutMs = options?.timeoutMs ?? 180_000;
+  const init: RequestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(files),
-  });
+    body: JSON.stringify(files.map(toClassifyPayload)),
+  };
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    init.signal = AbortSignal.timeout(timeoutMs);
+  }
+  return request<ClassifyResponse>(`/classify?${params}`, init);
+}
+
+/** Recursively split a chunk on network failure (Load failed / abort). */
+export async function classifyFilesResilient(
+  files: FileInfo[],
+  options: { sessionId: string; onChunkDone?: (done: number, total: number) => void },
+  baseOffset = 0,
+  totalHint?: number,
+): Promise<ClassifyResponse> {
+  const total = totalHint ?? files.length + baseOffset;
+  try {
+    const result = await classifyFiles(files, {
+      persistPlan: false,
+      sessionId: options.sessionId,
+    });
+    options.onChunkDone?.(baseOffset + files.length, total);
+    return result;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (files.length > 40 && isLikelyPayloadOrTimeoutFailure(msg)) {
+      const mid = Math.ceil(files.length / 2);
+      const left = await classifyFilesResilient(
+        files.slice(0, mid),
+        options,
+        baseOffset,
+        total,
+      );
+      const right = await classifyFilesResilient(
+        files.slice(mid),
+        options,
+        baseOffset + mid,
+        total,
+      );
+      return {
+        plan_id: null,
+        total: left.total + right.total,
+        rule_classified: left.rule_classified + right.rule_classified,
+        ai_classified: left.ai_classified + right.ai_classified,
+        session_id: options.sessionId,
+        items: [...left.items, ...right.items],
+      };
+    }
+    throw e;
+  }
 }
 
 export async function buildPlanFromItems(items: ClassifyItem[]) {
-  return request<{ plan_id: string }>("/plan/build", {
+  return request<{ plan_id: string; total?: number }>("/plan/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(items),
+    body: JSON.stringify({ items }),
+  });
+}
+
+export async function buildPlanFromSession(sessionId: string) {
+  return request<{ plan_id: string; total?: number }>("/plan/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, items: [] }),
   });
 }
 

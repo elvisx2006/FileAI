@@ -34,8 +34,8 @@ import {
 } from "lucide-react";
 import {
   scanAll,
-  classifyFiles,
-  buildPlanFromItems,
+  classifyFilesResilient,
+  buildPlanFromSession,
   confirmPlan,
   undoOperation,
   undoLatestOperation,
@@ -66,8 +66,8 @@ import "./App.css";
 
 type Page = "dashboard" | "organize" | "history" | "settings" | "browse";
 
-/** Per-request file count for /classify to avoid huge JSON payloads on the main thread. */
-const CLASSIFY_CHUNK_SIZE = 2500;
+/** Per-request file count — keep small to avoid WKWebView "Load failed" on large POSTs. */
+const CLASSIFY_CHUNK_SIZE = 400;
 const CLASSIFY_PREVIEW_PAGE = 500;
 
 const FILE_TYPE_FILTERS = [
@@ -471,35 +471,47 @@ export default function App() {
       return;
     }
     setProgress({ current: 0, total: allFiles.length, stage: "classify" });
+    const sessionId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `cls-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     try {
-      if (allFiles.length <= CLASSIFY_CHUNK_SIZE) {
-        const result = await classifyFiles(allFiles, { persistPlan: true });
-        setClassifyResult(result.items);
-        setPlanId(result.plan_id);
-        setClassifyPreviewLimit(CLASSIFY_PREVIEW_PAGE);
-        showToast(`分类完成: 规则 ${result.rule_classified} 个, AI ${result.ai_classified} 个`);
-      } else {
-        const mergedItems: ClassifyItem[] = [];
-        let totalRule = 0;
-        let totalAi = 0;
-        for (let offset = 0; offset < allFiles.length; offset += CLASSIFY_CHUNK_SIZE) {
-          const chunk = allFiles.slice(offset, offset + CLASSIFY_CHUNK_SIZE);
-          const result = await classifyFiles(chunk, { persistPlan: false });
-          mergedItems.push(...result.items);
-          totalRule += result.rule_classified;
-          totalAi += result.ai_classified;
-          setProgress({
-            current: Math.min(offset + chunk.length, allFiles.length),
-            total: allFiles.length,
-            stage: "classify",
-          });
-        }
-        const { plan_id } = await buildPlanFromItems(mergedItems);
-        setClassifyResult(mergedItems);
-        setPlanId(plan_id);
-        setClassifyPreviewLimit(CLASSIFY_PREVIEW_PAGE);
-        showToast(`分类完成: 规则 ${totalRule} 个, AI ${totalAi} 个`);
+      const mergedItems: ClassifyItem[] = [];
+      let totalRule = 0;
+      let totalAi = 0;
+      let doneCount = 0;
+      for (let offset = 0; offset < allFiles.length; offset += CLASSIFY_CHUNK_SIZE) {
+        const chunk = allFiles.slice(offset, offset + CLASSIFY_CHUNK_SIZE);
+        const result = await classifyFilesResilient(
+          chunk,
+          {
+            sessionId,
+            onChunkDone: (done) => {
+              setProgress({
+                current: Math.min(done, allFiles.length),
+                total: allFiles.length,
+                stage: "classify",
+              });
+            },
+          },
+          offset,
+          allFiles.length,
+        );
+        mergedItems.push(...result.items);
+        totalRule += result.rule_classified;
+        totalAi += result.ai_classified;
+        doneCount = Math.min(offset + chunk.length, allFiles.length);
+        setProgress({
+          current: doneCount,
+          total: allFiles.length,
+          stage: "classify",
+        });
       }
+      const { plan_id } = await buildPlanFromSession(sessionId);
+      setClassifyResult(mergedItems);
+      setPlanId(plan_id);
+      setClassifyPreviewLimit(CLASSIFY_PREVIEW_PAGE);
+      showToast(`分类完成: 规则 ${totalRule} 个, AI ${totalAi} 个`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "网络错误或后端未启动，请检查后端服务是否正常运行。";
       setErrorInfo({

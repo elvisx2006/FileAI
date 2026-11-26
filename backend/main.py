@@ -31,8 +31,13 @@ logger = logging.getLogger(__name__)
 ws_clients: list[WebSocket] = []
 # In-memory plan store (keyed by plan id)
 plan_store: dict[str, OrganizePlan] = {}
+# Chunked classify sessions: session_id -> accumulated ClassifyResult
+classify_sessions: dict[str, list[ClassifyResult]] = {}
 # Track ongoing organize tasks: plan_id -> {current, total, done, result}
 organize_status: dict[str, dict] = {}
+
+# Hard cap per /classify request to avoid WebView "Load failed" on huge JSON bodies.
+MAX_CLASSIFY_REQUEST_FILES = 500
 
 # Main event loop (set in lifespan) — watcher callbacks run on watchdog threads
 _main_loop: asyncio.AbstractEventLoop | None = None
@@ -79,7 +84,7 @@ async def lifespan(app: FastAPI):
         logger.info("Backend stopped")
 
 
-app = FastAPI(title="File Organizer API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="File Organizer API", version="1.5.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -126,7 +131,17 @@ async def scan_one(dir_name: str):
 # ── Classify ────────────────────────────────────────────
 
 @app.post("/api/classify")
-async def classify_files(files: list[dict], persist_plan: bool = True):
+async def classify_files(
+    files: list[dict],
+    persist_plan: bool = True,
+    session_id: Optional[str] = None,
+):
+    if len(files) > MAX_CLASSIFY_REQUEST_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单次最多 {MAX_CLASSIFY_REQUEST_FILES} 个文件，请由客户端分块请求",
+        )
+
     file_infos = [FileInfo(**f) for f in files]
 
     rule_results, needs_ai = rule_engine.classify_batch_by_rules(file_infos)
@@ -164,6 +179,11 @@ async def classify_files(files: list[dict], persist_plan: bool = True):
         )
 
     all_results = rule_results + ai_results
+
+    if session_id:
+        bucket = classify_sessions.setdefault(session_id, [])
+        bucket.extend(all_results)
+
     plan_id: str | None = None
     if persist_plan:
         plan = organizer.build_plan(all_results, dry_run=True)
@@ -182,19 +202,33 @@ async def classify_files(files: list[dict], persist_plan: bool = True):
         "total": len(all_results),
         "rule_classified": len(rule_results),
         "ai_classified": len(ai_results),
+        "session_id": session_id,
+        "session_count": len(classify_sessions.get(session_id, [])) if session_id else 0,
         "items": [r.dict() for r in all_results],
     }
 
 
+class PlanBuildBody(BaseModel):
+    items: list[dict] = []
+    session_id: Optional[str] = None
+
+
 @app.post("/api/plan/build")
-async def build_plan_from_classify_items(items: list[dict]):
-    """Create a single execution plan from merged classification rows (e.g. after chunked /classify)."""
-    if not items:
-        raise HTTPException(status_code=400, detail="items 不能为空")
-    results = [ClassifyResult(**i) for i in items]
+async def build_plan_from_classify_items(body: PlanBuildBody):
+    """Create a plan from session buffer (preferred) or explicit merged rows."""
+    results: list[ClassifyResult]
+    if body.session_id:
+        results = classify_sessions.pop(body.session_id, [])
+        if not results:
+            raise HTTPException(status_code=400, detail="session 不存在或已过期，请重新分类")
+    elif body.items:
+        results = [ClassifyResult(**i) for i in body.items]
+    else:
+        raise HTTPException(status_code=400, detail="需要 items 或 session_id")
+
     plan = organizer.build_plan(results, dry_run=True)
     plan_store[plan.id] = plan
-    return {"plan_id": plan.id}
+    return {"plan_id": plan.id, "total": len(results)}
 
 
 # ── Organize ───────────────────────────────────────────
